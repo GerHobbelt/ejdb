@@ -1097,7 +1097,7 @@ void ejdb_test3_8(void) {
   jql_destroy(&q);
   ejdb_list_destroy(&list);
 
-  // matching against PK array as JSON query paramater
+  // matching against PK array as JSON query parameter
   snprintf(buf, sizeof(buf), "[%" PRId64 ",%" PRId64 "]", id1, id2);
   rc = jbn_from_json(buf, &n, pool);
   CU_ASSERT_EQUAL_FATAL(rc, 0);
