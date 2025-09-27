@@ -6,7 +6,7 @@
 # https://github.com/Softmotions/autark
 
 META_VERSION=0.9.0
-META_REVISION=4db68cc
+META_REVISION=e8168df
 cd "$(cd "$(dirname "$0")"; pwd -P)"
 
 prev_arg=""
@@ -62,10 +62,10 @@ cat <<'a292effa503b' > ${AUTARK_HOME}/autark.c
 #ifndef CONFIG_H
 #define CONFIG_H
 #define META_VERSION "0.9.0"
-#define META_REVISION "4db68cc"
+#define META_REVISION "e8168df"
 #endif
 #define _AMALGAMATE_
-#define _XOPEN_SOURCE 600
+#define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #include <assert.h>
@@ -105,6 +105,9 @@ cat <<'a292effa503b' > ${AUTARK_HOME}/autark.c
 #endif
 #define AK_CONSTRUCTOR __attribute__((constructor))
 #define AK_DESTRUCTOR  __attribute__((destructor))
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
 #define LLEN(l__) (sizeof(l__) - 1)
 /* Align x_ with v_. v_ must be simple power for 2 value. */
 #define ROUNDUP(x_, v_) (((x_) + (v_) - 1) & ~((v_) - 1))
@@ -387,6 +390,7 @@ int map_iter_next(struct map_iter*);
 #include "xstr.h"
 #include <limits.h>
 #include <string.h>
+#include <sys/types.h>
 #endif
 static inline bool utils_char_is_space(char c) {
   return c == 32 || (c >= 9 && c <= 13);
@@ -417,9 +421,14 @@ static inline int utils_toupper_ascii(int c) {
   }
   return c;
 }
+static inline size_t utils_strnlen(const char *s, size_t maxlen) {
+  size_t i;
+  for (i = 0; i < maxlen && s[i]; ++i) ;
+  return i;
+}
 static inline char* utils_strncpy(char *dst, const char *src, size_t dst_sz) {
   if (dst_sz > 1) {
-    size_t len = strnlen(src, dst_sz - 1);
+    size_t len = utils_strnlen(src, dst_sz - 1);
     memcpy(dst, src, len);
     dst[len] = '\0';
   } else if (dst_sz) {
@@ -1361,7 +1370,7 @@ char* pool_strdup(struct pool *pool, const char *str) {
 }
 char* pool_strndup(struct pool *pool, const char *str, size_t len) {
   if (str) {
-    len = strnlen(str, len);
+    len = utils_strnlen(str, len);
     char *ret = pool_alloc(pool, len + 1);
     memcpy(ret, str, len);
     ret[len] = '\0';
@@ -2174,12 +2183,9 @@ int utils_fd_make_non_blocking(int fd) {
 #include <stdio.h>
 #include <dirent.h>
 #endif
-#ifdef __APPLE__
-#define st_atim st_atimespec
-#define st_ctim st_ctimespec
-#define st_mtim st_mtimespec
-#endif
-#define _TIMESPEC2MS(ts__) (((ts__).tv_sec * 1000ULL) + utils_lround((ts__).tv_nsec / 1.0e6))
+static inline uint64_t _ts_sec_nsec_to_ms(int64_t sec, int64_t nsec) {
+  return sec * 1000ULL + utils_lround(nsec / 1.0e6);
+}
 bool path_is_absolute(const char *path) {
   if (!path) {
     return 0;
@@ -2427,9 +2433,15 @@ static int _stat(const char *path, int fd, struct akpath_stat *fs) {
       }
     }
   }
-  fs->atime = _TIMESPEC2MS(st.st_atim);
-  fs->mtime = _TIMESPEC2MS(st.st_mtim);
-  fs->ctime = _TIMESPEC2MS(st.st_ctim);
+#if defined(__APPLE__) || defined(__NetBSD__)
+  fs->atime = _ts_sec_nsec_to_ms(st.st_atime, st.st_atimensec);
+  fs->mtime = _ts_sec_nsec_to_ms(st.st_mtime, st.st_mtimensec);
+  fs->ctime = _ts_sec_nsec_to_ms(st.st_ctime, st.st_ctimensec);
+#else
+  fs->atime = _ts_sec_nsec_to_ms(st.st_atim.tv_sec, st.st_atim.tv_nsec);
+  fs->mtime = _ts_sec_nsec_to_ms(st.st_mtim.tv_sec, st.st_mtim.tv_nsec);
+  fs->ctime = _ts_sec_nsec_to_ms(st.st_ctim.tv_sec, st.st_ctim.tv_nsec);
+#endif
   fs->size = (uint64_t) st.st_size;
   if (S_ISREG(st.st_mode)) {
     fs->ftype = AKPATH_TYPE_FILE;
@@ -4814,7 +4826,11 @@ static void _cc_setup(struct node *n) {
     }
   }
   if (!ctx->cc) {
-    ctx->cc = "cc";
+    if (strcmp(n->value, "cc") == 0) {
+      ctx->cc = "cc";
+    } else {
+      ctx->cc = "c++";
+    }
     node_warn(n, "Fallback compiler: %s", ctx->cc);
   } else if (g_env.verbose) {
     node_info(n, "Compiler: %s", ctx->cc);
@@ -5246,7 +5262,11 @@ static void _install_symlink(struct _install_on_resolve_ctx *ctx, const char *sr
       node_fatal(errno, n, "Error creating symlink: %s", dst);
     }
   }
+#ifdef __APPLE__
+  struct timespec times[2] = { st->st_atime, st->st_mtime };
+#else
   struct timespec times[2] = { st->st_atim, st->st_mtim };
+#endif
   utimensat(AT_FDCWD, dst, times, AT_SYMLINK_NOFOLLOW);
 }
 static void _install_file(struct _install_on_resolve_ctx *ctx, const char *src, const char *dst, struct stat *st) {
@@ -5285,7 +5305,11 @@ static void _install_file(struct _install_on_resolve_ctx *ctx, const char *src, 
     }
   }
   fchmod(out_fd, st->st_mode);
+#ifdef __APPLE__
+  struct timespec times[2] = { st->st_atime, st->st_mtime };
+#else
   struct timespec times[2] = { st->st_atim, st->st_mtim };
+#endif
   futimens(out_fd, times);
   close(in_fd);
   close(out_fd);
@@ -5676,12 +5700,10 @@ struct unit* unit_create(const char *unit_path_, unsigned flags, struct pool *po
   unit->basename = path_basename((char*) unit->rel_path);
   unit->source_path = pool_printf(pool, "%s/%s", g_env.project.root_dir, unit_path);
   utils_strncpy(path, unit->source_path, sizeof(path));
-  path_dirname(path);
-  unit->dir = pool_strdup(pool, path);
+  unit->dir = pool_strdup(pool, path_dirname(path));
   unit->cache_path = pool_printf(pool, "%s/%s", g_env.project.cache_dir, unit_path);
   utils_strncpy(path, unit->cache_path, sizeof(path));
-  path_dirname(path);
-  unit->cache_dir = pool_strdup(pool, path);
+  unit->cache_dir = pool_strdup(pool, path_dirname(path));
   int rc = path_mkdirs(unit->cache_dir);
   if (rc) {
     akfatal(rc, "Failed to create directory: %s", path);
@@ -5831,7 +5853,7 @@ static int _usage_va(const char *err, va_list ap) {
           "        --pkgconfdir=<>         Path to 'pkgconfig' dir relative to prefix dir. Default: lib/pkgconfig");
 #endif
   fprintf(stderr, "\nautark <cmd> [options]\n");
-  fprintf(stderr, "  Execute a given command from checker script.\n");
+  fprintf(stderr, "  Execute a given command from check script.\n");
   fprintf(stderr,
           "\nautark set <key>=<value>\n"
           "  Sets key/value pair as output for check script.\n");
