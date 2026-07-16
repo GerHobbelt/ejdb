@@ -1,3 +1,6 @@
+2026-07-16 Anton Adamansky  <adamansky@gmail.com>  [2.81]
+  * jbi: fix 1-byte heap buffer overflow in jbi_node_expr_matched() #394
+
 2025-07-19  Anton Adamansky  <adamansky@gmail.com>  [v2.80]
   * Migration to Autark build system.
   * Project cleanup. Only java and nodejs bindings are maintained.
