@@ -348,7 +348,7 @@ static iwrc _query_visitor(EJDB_EXEC *ux, EJDB_DOC doc, int64_t *step) {
     size_t sz = iwxstr_size(xstr);
     char *buf = iwxstr_destroy_keep_ptr(xstr);
     pthread_mutex_lock(&ctx->mtx);
-    iwn_val_add_new(&ctx->vals, buf, sz);
+    iwn_vals_add_new(&ctx->vals, buf, sz);
     pthread_cond_broadcast(&ctx->cond);
     pthread_mutex_unlock(&ctx->mtx);
   } else {
