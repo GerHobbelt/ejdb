@@ -1,0 +1,28 @@
+cc {
+  jql_test1.c
+  set { _ ..${CFLAGS} -DIW_STATIC -DIW_TESTS -I S{src/tests} }
+}
+
+foreach {
+  OBJ
+  ${CC_OBJS}
+  run {
+    exec { ${CC} ${OBJ} ${LDFLAGS_TEST} -o %{${OBJ}} }
+    consumes { ${LIBEJDB_A} ${OBJ} }
+    produces { %{${OBJ}} }
+  }
+}
+
+include { data/Autark }
+
+if { ${EJDB_RUN_TESTS}
+ foreach {
+    OBJ
+    ${CC_OBJS}
+    run {
+      always
+      shell { %{${OBJ}} }
+      consumes { %{${OBJ}} }
+    }
+  }
+}
