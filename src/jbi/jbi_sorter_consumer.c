@@ -12,11 +12,43 @@ static void _jbi_scan_sorter_release(struct jbexec *ctx) {
   memset(ssc, 0, sizeof(*ssc));
 }
 
+static int _jbi_jbl_cmp_atomic_values(struct jbl *v1, struct jbl *v2) {
+  jbl_type_t t1 = jbl_type(v1);
+  jbl_type_t t2 = jbl_type(v2);
+  if (t1 != t2) {
+    return (int) t1 - (int) t2;
+  }
+  switch (t1) {
+    case JBV_BOOL: {
+      int b1 = binn_bool_get(&v1->bn) ? 1 : 0;
+      int b2 = binn_bool_get(&v2->bn) ? 1 : 0;
+      return b1 - b2;
+    }
+    case JBV_I64: {
+      int64_t vv1 = jbl_get_i64(v1);
+      int64_t vv2 = jbl_get_i64(v2);
+      return vv1 > vv2 ? 1 : vv1 < vv2 ? -1 : 0;
+    }
+    case JBV_STR: {
+      const char *s1 = jbl_get_str(v1);
+      const char *s2 = jbl_get_str(v2);
+      return strcmp(s1 ? s1 : "", s2 ? s2 : "");
+    }
+    case JBV_F64: {
+      double vv1 = jbl_get_f64(v1);
+      double vv2 = jbl_get_f64(v2);
+      return vv1 > vv2 ? 1 : vv1 < vv2 ? -1 : 0;
+    }
+    default:
+      return 0;
+  }
+}
+
 static int _jbi_scan_sorter_cmp(const void *o1, const void *o2, void *op) {
   int rv = 0;
   iwrc rc;
   uint32_t r1, r2;
-  struct jbl d1, d2;
+  struct jbl d1 = JBL_INITIALIZER, d2 = JBL_INITIALIZER;
   struct jbexec *ctx = op;
   struct jbssc *ssc = &ctx->ssc;
   struct jqp_aux *aux = ctx->ux->q->aux;
@@ -29,17 +61,17 @@ static int _jbi_scan_sorter_cmp(const void *o1, const void *o2, void *op) {
   p1 = ssc->docs + r1 + sizeof(uint64_t) /*id*/;
   p2 = ssc->docs + r2 + sizeof(uint64_t) /*id*/;
 
-  RCC(rc, finish, jbl_from_buf_keep_onstack2(&d1, p1));
-  RCC(rc, finish, jbl_from_buf_keep_onstack2(&d2, p2));
+  // The documents are validated when they are collected, only the root header is parsed here.
+  RCC(rc, finish, jb_jbl_wrap_buffer(&d1, p1, ssc->docs_npos - r1 - sizeof(uint64_t)));
+  RCC(rc, finish, jb_jbl_wrap_buffer(&d2, p2, ssc->docs_npos - r2 - sizeof(uint64_t)));
 
   for (int i = 0; i < aux->orderby_num; ++i) {
-    struct jbl v1 = { 0 };
-    struct jbl v2 = { 0 };
-    JBL_PTR ptr = aux->orderby_ptrs[i];
+    struct jbl v1 = JBL_INITIALIZER, v2 = JBL_INITIALIZER;
+    struct jbl_ptr *ptr = aux->orderby_ptrs[i];
     int desc = (ptr->op & 1) ? -1 : 1; // If `-1` do desc sorting
-    _jbl_at(&d1, ptr, &v1);
-    _jbl_at(&d2, ptr, &v2);
-    rv = _jbl_cmp_atomic_values(&v1, &v2) * desc;
+    jb_jbl_at(&d1, ptr, &v1);
+    jb_jbl_at(&d2, ptr, &v2);
+    rv = _jbi_jbl_cmp_atomic_values(&v1, &v2) * desc;
     if (rv) {
       break;
     }
@@ -53,9 +85,9 @@ finish:
   return rv;
 }
 
-static iwrc _jbi_scan_sorter_apply(IWPOOL *pool, struct jbexec *ctx, struct jql *q, struct ejdb_doc *doc) {
-  JBL_NODE root;
-  JBL jbl = doc->raw;
+static iwrc _jbi_scan_sorter_apply(struct iwpool *pool, struct jbexec *ctx, struct jql *q, struct ejdb_doc *doc) {
+  struct jbl_node *root;
+  struct jbl *jbl = doc->raw;
   struct jqp_aux *aux = q->aux;
   iwrc rc = jbl_to_node(jbl, &root, true, pool);
   RCRET(rc);
@@ -64,13 +96,13 @@ static iwrc _jbi_scan_sorter_apply(IWPOOL *pool, struct jbexec *ctx, struct jql 
     rc = jb_del(ctx->jbc, jbl, doc->id);
     RCRET(rc);
   } else if (aux->apply || aux->apply_placeholder) {
-    struct jbl sn = { 0 };
+    struct jbl sn = JBL_INITIALIZER;
     rc = jql_apply(q, root, pool);
     RCRET(rc);
-    rc = _jbl_from_node(&sn, root);
+    rc = jbl_fill_from_node(&sn, root);
     RCRET(rc);
     rc = jb_put(ctx->jbc, &sn, doc->id);
-    binn_free(&sn.bn);
+    binn_destroy(&sn.bn);
     RCRET(rc);
   }
   if (aux->projection) {
@@ -82,12 +114,12 @@ static iwrc _jbi_scan_sorter_apply(IWPOOL *pool, struct jbexec *ctx, struct jql 
 static iwrc _jbi_scan_sorter_do(struct jbexec *ctx) {
   iwrc rc = 0;
   int64_t step = 1, id;
-  struct jbl jbl;
+  struct jbl jbl = JBL_INITIALIZER;
   struct ejdb_exec *ux = ctx->ux;
   struct jbssc *ssc = &ctx->ssc;
   uint32_t rnum = ssc->refs_num;
   struct jqp_aux *aux = ux->q->aux;
-  IWPOOL *pool = ux->pool;
+  struct iwpool *pool = ux->pool;
 
   if (rnum) {
     if (setjmp(ssc->fatal_jmp)) { // Init error jump
@@ -106,7 +138,7 @@ static iwrc _jbi_scan_sorter_do(struct jbexec *ctx) {
     uint8_t *rp = ssc->docs + ssc->refs[i];
     memcpy(&id, rp, sizeof(id));
     rp += sizeof(id);
-    RCC(rc, finish, jbl_from_buf_keep_onstack2(&jbl, rp));
+    RCC(rc, finish, jb_jbl_wrap_buffer(&jbl, rp, ssc->docs_npos - ssc->refs[i] - sizeof(id)));
 
     struct ejdb_doc doc = {
       .id = id,
@@ -115,7 +147,7 @@ static iwrc _jbi_scan_sorter_do(struct jbexec *ctx) {
 
     if (aux->apply || aux->projection) {
       if (!pool) {
-        pool = iwpool_create((size_t) jbl.bn.size * 2);
+        pool = iwpool_create(jbl.bn.size * 2);
         if (!pool) {
           rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
           goto finish;
@@ -153,7 +185,7 @@ finish:
 }
 
 static iwrc _jbi_scan_sorter_init(struct jbssc *ssc, off_t initial_size) {
-  IWFS_EXT_OPTS opts = {
+  struct iwfs_ext_opts opts = {
     .initial_size = initial_size,
     .rspolicy = iw_exfile_szpolicy_fibo,
     .file = {
@@ -171,7 +203,7 @@ static iwrc _jbi_scan_sorter_init(struct jbssc *ssc, off_t initial_size) {
 }
 
 iwrc jbi_sorter_consumer(
-  struct jbexec *ctx, IWKV_cursor cur, int64_t id,
+  struct jbexec *ctx, struct iwkv_cursor *cur, int64_t id,
   int64_t *step, bool *matched, iwrc err) {
   if (!id) {
     // End of scan
@@ -186,17 +218,17 @@ iwrc jbi_sorter_consumer(
 
   iwrc rc;
   size_t vsz = 0;
-  struct jbl jbl;
+  struct jbl jbl = JBL_INITIALIZER;
   struct jbssc *ssc = &ctx->ssc;
   struct ejdb *db = ctx->jbc->db;
-  IWFS_EXT *sof = &ssc->sof;
+  struct iwfs_ext *sof = &ssc->sof;
 
 start:
   {
     if (cur) {
       rc = iwkv_cursor_copy_val(cur, ctx->jblbuf + sizeof(id), ctx->jblbufsz - sizeof(id), &vsz);
     } else {
-      IWKV_val key = {
+      struct iwkv_val key = {
         .data = &id,
         .size = sizeof(id)
       };
@@ -219,7 +251,7 @@ start:
     }
   }
 
-  rc = jbl_from_buf_keep_onstack(&jbl, ctx->jblbuf + sizeof(id), vsz);
+  rc = jbl_init_from_buf(&jbl, ctx->jblbuf + sizeof(id), vsz, true);
   RCRET(rc);
 
   rc = jql_matched(ctx->ux->q, &jbl, matched);

@@ -115,9 +115,9 @@ typedef enum {
 } jn_ecode_t;
 
 typedef struct JBN {
-  EJDB      db;
-  IWPOOL   *pool;
-  EJDB_OPTS opts;
+  struct ejdb     *db;
+  struct iwpool   *pool;
+  struct ejdb_opts opts;
   napi_threadsafe_function resultset_tsf;
 } *JBN;
 
@@ -130,7 +130,7 @@ typedef struct JNWORK {
   void *unwrapped;
   void *data;
   void (*release_data)(napi_env env, struct JNWORK *w);
-  IWPOOL *pool;
+  struct iwpool *pool;
 } *JNWORK;
 
 // Globals
@@ -203,7 +203,7 @@ IW_INLINE napi_value jn_create_int64(napi_env env, int64_t val) {
   return ret;
 }
 
-static char* jn_string(napi_env env, napi_value val_, IWPOOL *pool, bool nulls, bool coerce, iwrc *rcp) {
+static char* jn_string(napi_env env, napi_value val_, struct iwpool *pool, bool nulls, bool coerce, iwrc *rcp) {
   *rcp = 0;
   size_t len = 0;
   napi_status ns = 0;
@@ -243,7 +243,7 @@ static char* jn_string(napi_env env, napi_value val_, IWPOOL *pool, bool nulls, 
 }
 
 static char* jn_string_at(
-  napi_env env, IWPOOL *pool, napi_value arr,
+  napi_env env, struct iwpool *pool, napi_value arr,
   bool nulls, bool coerce, uint32_t idx, iwrc *rcp) {
   *rcp = 0;
   napi_value el;
@@ -357,7 +357,7 @@ static bool jn_bool_at(napi_env env, napi_value arr, bool nulls, bool coerce, ui
 
 static iwrc jb_jbn_alloc(JBN *vp) {
   *vp = 0;
-  IWPOOL *pool = iwpool_create(255);
+  struct iwpool *pool = iwpool_create(255);
   if (!pool) {
     return iwrc_set_errno(IW_ERROR_ALLOC, errno);
   }
@@ -395,7 +395,7 @@ static void jn_jbn_destroy(napi_env env, JBN *vp) {
 
 static JNWORK jn_work_create(iwrc *rcp) {
   *rcp = 0;
-  IWPOOL *pool = iwpool_create(255);
+  struct iwpool *pool = iwpool_create(255);
   if (!pool) {
     *rcp = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     return 0;
@@ -485,6 +485,8 @@ static napi_value jn_ejdb2impl_ctor(napi_env env, napi_callback_info info) {
   // opts.kv.oflags                       // non null
   // opts.kv.wal.enabled                  // non null
   // opts.kv.wal.check_crc_on_checkpoint
+  // iowow v1.7 replaced `check_crc_on_checkpoint` with `no_crc`:
+  // CRC-32C checksums of WAL records are enabled by default.
   // opts.kv.wal.checkpoint_buffer_sz
   // opts.kv.wal.checkpoint_timeout_sec
   // opts.kv.wal.savepoint_timeout_sec
@@ -505,7 +507,7 @@ static napi_value jn_ejdb2impl_ctor(napi_env env, napi_callback_info info) {
   RCGO(rc, finish);
   jbn->opts.kv.wal.enabled = jn_bool_at(env, varr, false, false, argc++, &rc);
   RCGO(rc, finish);
-  jbn->opts.kv.wal.check_crc_on_checkpoint = jn_bool_at(env, varr, true, true, argc++, &rc);
+  jbn->opts.kv.wal.no_crc = !jn_bool_at(env, varr, true, true, argc++, &rc);
   RCGO(rc, finish);
   jbn->opts.kv.wal.checkpoint_buffer_sz = jn_int_at(env, varr, true, false, argc++, &rc);
   RCGO(rc, finish);
@@ -717,7 +719,7 @@ struct JNPUT_DATA {
 };
 
 static void jn_put_execute(napi_env env, void *data) {
-  JBL jbl = 0;
+  struct jbl *jbl = 0;
   JNWORK work = data;
   JBN jbn = work->unwrapped;
   if (!jbn->db) {
@@ -823,7 +825,7 @@ static napi_value jn_patch_or_put(napi_env env, napi_callback_info info) {
 struct JNGET_DATA {
   int64_t     id;
   const char *coll;
-  JBL jbl;
+  struct jbl *jbl;
 };
 
 static void jn_get_data_destroy(napi_env env, JNWORK w) {
@@ -851,7 +853,7 @@ static void jn_get_complete(napi_env env, napi_status ns, void *data) {
     goto finish;
   }
   struct JNGET_DATA *wdata = work->data;
-  IWXSTR *xstr = iwxstr_new2(jbl_size(wdata->jbl) * 2);
+  struct iwxstr *xstr = iwxstr_new2(jbl_size(wdata->jbl) * 2);
   if (!xstr) {
     work->rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     goto finish0;
@@ -1060,7 +1062,7 @@ static void jn_info_complete(napi_env env, napi_status ns, void *data) {
     goto finish;
   }
   struct JNGET_DATA *wdata = work->data;
-  IWXSTR *xstr = iwxstr_new2(jbl_size(wdata->jbl) * 2);
+  struct iwxstr *xstr = iwxstr_new2(jbl_size(wdata->jbl) * 2);
   if (!xstr) {
     work->rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     goto finish0;
@@ -1320,7 +1322,7 @@ finish:
 
 typedef struct JNQL {
   int refs;
-  JQL jql;
+  struct jql *jql;
 } *JNQL;
 
 static void jn_jnql_destroy_mt(JNQL *qlp) {
@@ -1350,7 +1352,7 @@ static napi_value jn_jql_init(napi_env env, napi_callback_info info) {
   void *data;
   JNQL jnql = 0;
 
-  IWPOOL *pool = iwpool_create(255);
+  struct iwpool *pool = iwpool_create(255);
   if (!pool) {
     rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     goto finish;
@@ -1416,9 +1418,9 @@ typedef struct JNQS { // query stream associated data
 } *JNQS;
 
 typedef struct JNCS { // call data to `k_add_stream_tsfn`
-  bool     has_count;
-  IWXSTR  *log;
-  IWXSTR  *document;
+  bool has_count;
+  struct iwxstr *log;
+  struct iwxstr *document;
   int64_t  count;
   int64_t  document_id;
   napi_ref stream_ref; // copied from `JNQS`
@@ -1555,7 +1557,7 @@ static iwrc jn_stream_pause_guard(JNQS qs) {
   return rc;
 }
 
-static iwrc jn_jql_stream_visitor(EJDB_EXEC *ux, EJDB_DOC doc, int64_t *step) {
+static iwrc jn_jql_stream_visitor(struct ejdb_exec *ux, struct ejdb_doc *doc, int64_t *step) {
   JNCS cs = 0;
   JNQS qs = ux->opaque;
   JNWORK work = &qs->work;
@@ -1567,7 +1569,7 @@ static iwrc jn_jql_stream_visitor(EJDB_EXEC *ux, EJDB_DOC doc, int64_t *step) {
   work->rc = jn_stream_pause_guard(qs);
   RCRET(work->rc);
 
-  IWXSTR *xstr = iwxstr_new();
+  struct iwxstr *xstr = iwxstr_new();
   if (!xstr) {
     work->rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     return work->rc;
@@ -1615,9 +1617,9 @@ static void jn_jql_stream_execute(napi_env env, void *data) {
   uint32_t refs = 0;
   JNWORK work = data;
   JNQS qs = work->data;
-  JQL q = qs->jnql->jql;
+  struct jql *q = qs->jnql->jql;
   JNCS cs = 0;
-  EJDB_EXEC ux = { 0 };
+  struct ejdb_exec ux = { 0 };
   bool has_count = jql_has_aggregate_count(q);
 
   // Trying to stop on paused stream
@@ -1849,7 +1851,7 @@ finish:
 }
 
 static void jn_jql_free_set_string_value(void *ptr, void *op) {
-  IWPOOL *pool = op;
+  struct iwpool *pool = op;
   if (pool) {
     iwpool_destroy(pool);
   }
@@ -1867,8 +1869,8 @@ static napi_value jn_jql_set(napi_env env, napi_callback_info info) {
   napi_status ns;
   napi_valuetype vtype;
 
-  IWPOOL *vpool = 0; // jql_set_xxx value
-  IWPOOL *pool = iwpool_create(32);
+  struct iwpool *vpool = 0; // jql_set_xxx value
+  struct iwpool *pool = iwpool_create(32);
   if (!pool) {
     rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
     goto finish;
@@ -1908,7 +1910,7 @@ static napi_value jn_jql_set(napi_env env, napi_callback_info info) {
     case 6:   // String
     case 1:   // JSON
     case 2: { // Regexp
-      JBL_NODE node;
+      struct jbl_node *node;
       vpool = iwpool_create(64);
       if (!vpool) {
         rc = iwrc_set_errno(IW_ERROR_ALLOC, errno);
