@@ -148,9 +148,6 @@ iwrc jql_set_json2(
   qv->vnode = val;
   iwrc rc = _jql_set_placeholder(q, placeholder, index, qv);
   if (rc) {
-    if (freefn) {
-      freefn(val, op);
-    }
     free(qv);
   }
   return rc;
@@ -219,10 +216,13 @@ iwrc jql_set_str2(
   struct jql *q, const char *placeholder, int index, const char *val,
   void (*freefn)(void*, void*), void *op) {
   if (val == 0) {
-    if (freefn) {
+    // Nothing is retained by the query for a NULL value, so the payload is
+    // released only when the placeholder was bound successfully.
+    iwrc rc = jql_set_null(q, placeholder, index);
+    if (!rc && freefn) {
       freefn((void*) val, op);
     }
-    return jql_set_null(q, placeholder, index);
+    return rc;
   }
 
   struct jqval *qv = malloc(sizeof(*qv));
@@ -236,9 +236,6 @@ iwrc jql_set_str2(
   qv->vstr = val;
   iwrc rc = _jql_set_placeholder(q, placeholder, index, qv);
   if (rc) {
-    if (freefn) {
-      freefn((void*) val, op);
-    }
     free(qv);
   }
   return rc;
@@ -257,7 +254,11 @@ iwrc jql_set_str3(struct jql *q, const char *placeholder, int index, const char 
   if (!val) {
     return iwrc_set_errno(IW_ERROR_ALLOC, errno);
   }
-  return jql_set_str2(q, placeholder, index, val, _freefn_str, 0);
+  iwrc rc = jql_set_str2(q, placeholder, index, val, _freefn_str, 0);
+  if (rc) {
+    free(val);
+  }
+  return rc;
 }
 
 iwrc jql_set_bool(struct jql *q, const char *placeholder, int index, bool val) {
@@ -299,9 +300,7 @@ iwrc jql_set_regexp2(
 
 finish:
   if (rc) {
-    if (freefn) {
-      freefn((void*) expr, op);
-    }
+    // The query did not take ownership of `expr` on failure.
     if (rx != IWRE_UNUSED_PTR) {
       iwre_destroy(rx);
     }
@@ -1689,7 +1688,7 @@ static bool _jql_proj_matched(
   }
   if (proj->pos + 1 == lvl) {
     struct jqp_string *ps = proj->value;
-    for (int i = 0; i < lvl; ps = ps->next, ++i); // -V529
+    for (int i = 0; i < lvl; ps = ps->next, ++i) ; // -V529
     assert(ps);
     if (ps->flavour & JQP_STR_PROJFIELD) {
       for (struct jqp_string *sn = ps; sn; sn = sn->subnext) {
@@ -1729,7 +1728,7 @@ static bool _jql_proj_join_matched(
   const char *pv, *spos;
   bool ret = false;
   struct jqp_string *ps = proj->value;
-  for (int i = 0; i < lvl; ps = ps->next, ++i); // -V529
+  for (int i = 0; i < lvl; ps = ps->next, ++i) ; // -V529
   assert(ps);
 
   if (ps->flavour & JQP_STR_PROJFIELD) {
@@ -1776,8 +1775,8 @@ static bool _jql_proj_join_matched(
         RCGA(pool, finish);
         exec_ctx->proj_joined_nodes_pool = pool;
       } else if (cache && (iwpool_used_size(pool) > 10UL * 1024 * 1024)) { // 10Mb
+        iwhmap_destroy(cache);
         exec_ctx->proj_joined_nodes_cache = 0;
-        iwhmap_destroy(exec_ctx->proj_joined_nodes_cache);
         cache = 0;
         iwpool_destroy(pool);
         pool = iwpool_create(1024UL * 1024); // 1Mb
