@@ -1,6 +1,6 @@
 # EJDB2 Java JNI binding
 
-Embeddable JSON Database engine http://ejdb.org Java binding.
+Embeddable JSON Database engine https://github.com/Softmotions/ejdb Java binding.
 
 See https://github.com/Softmotions/ejdb/blob/master/README.md
 
@@ -29,6 +29,7 @@ public static void main(String[] args) {
 
 - Linux x64
 - MacOS
+- Android (see the [Android binding](../ejdb2_android/README.md))
 
 ## Prerequisites
 

@@ -1,7 +1,11 @@
-if { ${BUILD_BINDING_JNI} 
+if { ${BUILD_BINDING_JNI}
   include { ejdb2_jni/Autark }
 }
 
-if { ${BUILD_BINDING_NODEJS} 
+if { ${BUILD_BINDING_NODEJS}
   include { ejdb2_node/Autark }
+}
+
+if { ${BUILD_BINDING_ANDROID}
+  include { ejdb2_android/Autark }
 }
